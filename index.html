@@ -1,4 +1,5 @@
 <!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"></head><body>
+
 <title>Dompet Gajian</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -83,6 +84,17 @@ td.r,th.r{text-align:right} td.r{font-family:var(--f-mono);font-variant-numeric:
 .chips .btn{flex-shrink:0}
 .empty{padding:16px;text-align:center;color:var(--sub);font-size:13px}
 textarea{width:100%;min-height:110px;font-family:var(--f-mono);font-size:11px;color:var(--ink);border:none;padding:10px;border-radius:12px;background:var(--bg);box-shadow:inset 4px 4px 8px var(--lo),inset -4px -4px 8px var(--hi)}
+[hidden]{display:none!important}
+input[type=checkbox]{box-shadow:none;padding:0;width:16px;height:16px;accent-color:var(--teal)}
+.badge{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;margin-left:5px;border-radius:9px;background:var(--coral);color:var(--bg);font-size:10.5px;font-weight:700}
+.mchart{display:flex;gap:10px;height:180px;padding-top:4px}
+.mchart .col{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;gap:4px;background:none;padding:4px 0;border-radius:10px}
+.mchart .col.cur{box-shadow:inset 3px 3px 6px var(--lo),inset -3px -3px 6px var(--hi)}
+.mchart .area{flex:1;width:100%;display:flex;align-items:flex-end;justify-content:center;min-height:0}
+.stackbar{width:70%;max-width:44px;display:flex;flex-direction:column-reverse;border-radius:6px 6px 0 0;overflow:hidden}
+.stackbar span{display:block;background:var(--c);min-height:2px}
+.mchart .col.cur .lbl{color:var(--teal);font-weight:700}
+.slip{font-family:var(--f-mono);font-size:11.5px;line-height:1.55;white-space:pre;overflow-x:auto;min-height:0}
 @media (max-width:520px){h1{font-size:23px}.card{padding:14px}.days{gap:4px}}
 @media (prefers-reduced-motion:no-preference){.btn,.tabs button{transition:box-shadow .15s}}
 </style>
@@ -146,10 +158,10 @@ const num=v=>{const n=parseFloat(String(v).replace(/[^\d.,-]/g,"").replace(/\./g
 const emptyDay=i=>({status:i===3?"libur":"hadir",jamBiasa:0,jamMerah:0});
 const newWeek=(start,tpl)=>({id:uid(),start,days:tpl?tpl.map(d=>({status:d.status,jamBiasa:0,jamMerah:0})):Array.from({length:7},(_,i)=>emptyDay(i))});
 function defaultState(){const m=mk(today0());return{v:1,tierId:"gt12",tiers:JSON.parse(JSON.stringify(DEFAULT_TIERS)),weeks:[newWeek(defaultThursday())],expenses:[],joinDate:"",
-  incomeManual:0,dailyLiving:40000,targetMonths:3,savingsStart:0,setoranMode:"rekomendasi",setoranAmount:0,setoranUnit:"gajian",
+  incomeManual:0,dailyLiving:40000,targetMonths:3,savingsStart:0,setoranMode:"rekomendasi",setoranAmount:0,setoranUnit:"gajian",saldoAdj:{},carryOver:true,remindDays:3,recurring:[],recurGen:{},budgets:{},goals:[],
   bills:[{id:uid(),name:"Uang Kos",kind:"kos",amount:450000,dueDay:21,startMonth:m,tenor:0}],
   paid:{},activeMonth:m,tab:"ringkasan"}}
-let S=defaultState(), ui={editBill:null,confirm:null,form:{}};
+let S=defaultState(), ui={editBill:null,confirm:null,form:{},editDay:null,editSaldo:null,editGoal:null,slip:null,flash:""};
 function load(){
   try{const raw=localStorage.getItem(KEY);
     if(raw){S=Object.assign(defaultState(),JSON.parse(raw));return}
@@ -219,12 +231,43 @@ function recommend(m){
   return{inc,I,W,H,sisa,ideal,minimal,realistis,level,perPay,custom,setor,setorPay,bebas:sisa-setor,ratioPL:I>0?W.pl/I:0,ratioAll:I>0?(W.pl+W.lain)/I:0}
 }
 const savingsBalance=()=>S.savingsStart+S.expenses.filter(e=>e.category==="tabungan").reduce((a,e)=>a+e.amount,0);
+/* target tabungan */
+const goalSaved=gid=>S.expenses.filter(e=>e.category==="tabungan"&&(e.goalId||"")===gid).reduce((a,e)=>a+e.amount,0);
+const emergencyBal=()=>S.savingsStart+goalSaved("");
+function paysUntil(d){let n=0;for(const p of saturdays(today0(),800)){if(p>d)break;n++}return n}
+function goalPlan(perPay){
+  const gs=(S.goals||[]).map(g=>{const saved=goalSaved(g.id),rem=Math.max(0,g.target-saved),dl=g.deadline?parse(g.deadline):null,n=dl?paysUntil(dl):0,need=rem>0&&dl?(n>0?ceilTo(rem/n,1000):rem):0;return{g,saved,rem,dl,n,need,alloc:0}});
+  const totalNeed=gs.reduce((a,x)=>a+x.need,0),scale=totalNeed>perPay&&totalNeed>0?perPay/totalNeed:1;
+  gs.forEach(x=>x.alloc=Math.min(x.rem,floorTo(x.need*scale,1000)));
+  let left=perPay-gs.reduce((a,x)=>a+x.alloc,0);
+  const open=gs.filter(x=>!x.dl&&x.rem>0),share=open.length?floorTo(left/(open.length+1),1000):0;
+  open.forEach(x=>x.alloc=Math.min(x.rem,share));
+  left=perPay-gs.reduce((a,x)=>a+x.alloc,0);
+  return{gs,totalNeed,emergency:Math.max(0,left)}}
+/* pengingat */
+function reminders(){const t=today0();return S.bills.map(b=>{const m=nextOpen(b);if(!m)return null;const D=dueDate(b,m),n=daysBetween(t,D);return n<=S.remindDays?{b,m,D,n}:null}).filter(Boolean).sort((a,b)=>a.D-b.D)}
+/* pengeluaran rutin */
+const WDAY=["Minggu","Senin","Selasa","Rabu","Kamis","Jumat","Sabtu"];
+function recurDates(r,until){const out=[],st=parse(r.start);
+  if(r.freq==="mingguan"){let d=new Date(st);while(d.getDay()!==r.day)d=addDays(d,1);for(;d<=until;d=addDays(d,7))out.push(new Date(d))}
+  else{const m0=mk(st);for(let i=0;i<600;i++){const k=addMonths(m0,i),x=new Date(+k.slice(0,4),+k.slice(5,7)-1,Math.min(r.day,dim(k)));if(x>until)break;if(x>=st)out.push(x)}}
+  return out}
+const nextRecur=r=>{const t=today0();return recurDates(r,addDays(t,62)).find(d=>d>t)||null};
+function runRecurring(){const t=today0();let n=0;
+  (S.recurring||[]).forEach(r=>{if(r.paused)return;recurDates(r,t).forEach(d=>{const k=r.id+"|"+iso(d);if(S.recurGen[k])return;
+    const e=addExpenseRec({desc:r.desc,amount:r.amount,date:iso(d),category:r.category,recurId:r.id});S.recurGen[k]=e.id;n++})});return n}
+/* batas belanja: minggu = gajian Sabtu s/d Jumat */
+function weekWindow(){const t=today0(),s=addDays(t,-((t.getDay()-6+7)%7));return[s,addDays(s,6)]}
+function budgetStatus(){const t=today0(),[ws,we]=weekWindow(),ms=new Date(t.getFullYear(),t.getMonth(),1),me=new Date(t.getFullYear(),t.getMonth()+1,0);
+  return Object.entries(S.budgets||{}).map(([cat,b])=>{const from=b.period==="minggu"?ws:ms,to=b.period==="minggu"?we:me;
+    const spent=S.expenses.filter(e=>e.category===cat&&e.amount>0).filter(e=>{const d=parse(e.date);return d>=from&&d<=to}).reduce((a,e)=>a+e.amount,0);
+    return{cat,c:CATS.find(c=>c[0]===cat)||CATS[6],amount:b.amount,period:b.period,from,to,spent,pct:b.amount>0?spent/b.amount:0}})}
 const LEVEL={ideal:["Ideal tercapai","--teal"],aman:["Aman","--teal"],ketat:["Ketat","--amber"],defisit:["Defisit","--coral"]};
 
 /* ---------- komponen kecil ---------- */
 const pill=(txt,c)=>`<span class="pill" style="color:var(${c})"><span class="dot" style="--c:var(${c})"></span>${txt}</span>`;
 function dueChip(D){const n=daysBetween(today0(),D);
-  if(n<0)return pill(`Telat ${-n} hari`,"--coral");if(n===0)return pill("Hari ini","--coral");if(n<=3)return pill(`${n} hari lagi`,"--amber");return pill(`${n} hari lagi`,"--teal")}
+  if(n<0)return pill(`Telat ${-n} hari`,"--coral");if(n===0)return pill("Hari ini","--coral");if(n<=S.remindDays)return pill(`${n} hari lagi`,"--amber");return pill(`${n} hari lagi`,"--teal")}
 const kindColor=k=>k==="kos"?"--plum":k==="paylater"?"--slate":"--grey";
 function monthChips(){const set=new Set([S.activeMonth,mk(today0())]);S.weeks.forEach(w=>set.add(w.start.slice(0,7)));S.expenses.forEach(e=>set.add(e.date.slice(0,7)));
   return`<div class="chips">${[...set].sort().map(m=>`<button class="btn ${m===S.activeMonth?"on teal":""}" data-act="month" data-v="${m}">${mLabel(m)}</button>`).join("")}</div>`}
@@ -234,7 +277,11 @@ function vRingkasan(){
   const m=mk(today0()), R=recommend(m), lv=LEVEL[R.level], plan=envelopePlan(6), I=R.I||1;
   const segs=[["Kos & tagihan rutin",R.W.kos+R.W.lain,"--plum"],["Pay later",R.W.pl,"--slate"],["Makan & transport",R.H,"--amber"],["Tabungan",R.setor,"--blue"],["Sisa bebas",Math.max(0,R.bebas),"--teal"]];
   const totalSeg=Math.max(I,segs.reduce((a,s)=>a+s[1],0));
-  const alerts=[];
+  const alerts=[], urgKey=new Set(plan.urgent.map(u=>u.b.id+"|"+u.m));
+  reminders().forEach(x=>{if(urgKey.has(x.b.id+"|"+x.m))return;alerts.push([x.n<=1?"--coral":"--amber",`Pengingat: <b>${esc(x.b.name)}</b> jatuh tempo ${dShort(x.D)} (${x.n===0?"hari ini":x.n+" hari lagi"}). Siapkan ${rp(x.b.amount)}.`])});
+  budgetStatus().forEach(x=>{const per=x.period==="minggu"?"minggu ini":"bulan ini";
+    if(x.pct>=1)alerts.push(["--coral",`Belanja <b>${x.c[1]}</b> ${per} ${rp(x.spent)}, lewat batas ${rp(x.amount)}.`]);
+    else if(x.pct>=0.8)alerts.push(["--amber",`Belanja <b>${x.c[1]}</b> sudah ${Math.round(x.pct*100)}% dari batas ${per}. Sisa ${rp(x.amount-x.spent)}.`])});
   plan.urgent.forEach(u=>alerts.push([u.late?"--coral":"--amber",u.late?`<b>${esc(u.b.name)}</b> ${mLabel(u.m)} sudah lewat jatuh tempo (${dShort(u.D)}) dan belum ditandai lunas. Bayar ${rp(u.b.amount)} dari saldo yang ada.`:`<b>${esc(u.b.name)}</b> jatuh tempo ${dShort(u.D)}, sebelum gajian berikutnya. Siapkan ${rp(u.b.amount)} dari saldo sekarang.`]));
   if(R.custom&&R.sisa>=0&&R.bebas<0)alerts.push(["--coral",`Setoran pilihanmu ${rp(R.setor)}/bulan lebih besar dari sisa uang ${rp(R.sisa)}. Bulan ini akan kurang ${rp(-R.bebas)}; turunkan setoran di tab Tabungan.`]);
   else if(R.custom&&R.setor>R.realistis&&R.sisa>0)alerts.push(["--amber",`Setoran pilihanmu di atas rekomendasi (${rp(R.realistis)}/bulan). Cadangan untuk kebutuhan mendadak tinggal ${rp(R.bebas)}.`]);
@@ -279,9 +326,23 @@ function vRingkasan(){
   <section class="grid3">
     ${stat("Pendapatan tercatat "+mLabel(m),rp(mi),"--teal")}
     ${stat("Pengeluaran & setoran",rp(me),"--coral")}
-    ${stat("Saldo bulan ini",rp(mi-me),mi-me>=0?"--teal":"--coral")}
+    ${saldoCard(m)}
   </section>`
 }
+function firstMonth(){let f=mk(today0());S.weeks.forEach(w=>{const k=w.start.slice(0,7);if(k<f)f=k});S.expenses.forEach(e=>{const k=e.date.slice(0,7);if(k<f)f=k});Object.keys(S.saldoAdj||{}).forEach(k=>{if(k<f)f=k});return f}
+function carryIn(m){if(!S.carryOver)return 0;return m<=firstMonth()?0:saldoOf(addMonths(m,-1))}
+const saldoBase=m=>carryIn(m)+monthIncome(m)-monthExpense(m);
+const saldoOf=m=>saldoBase(m)+((S.saldoAdj||{})[m]||0);
+function saldoCard(m){const adj=(S.saldoAdj||{})[m]||0,v=saldoOf(m);
+  if(ui.editSaldo===m)return`<div class="flat card stack" style="gap:8px"><label for="sd-val" class="sub tiny" style="font-weight:600">Saldo sebenarnya ${mLabel(m)} (uang yang kamu pegang sekarang)</label>
+    <input id="sd-val" type="number" value="${Math.round(v)}" step="1000">
+    <div class="row" style="gap:6px"><button class="btn teal" data-act="saveSaldo" data-v="${m}">Simpan</button><button class="link" data-act="cancelSaldo">Batal</button></div>
+    <div class="sub tiny">Selisih dengan catatan disimpan sebagai penyesuaian, jadi riwayat gaji dan pengeluaran tidak berubah.</div></div>`;
+  return`<div class="flat card"><div class="row between" style="gap:6px"><span class="sub tiny" style="font-weight:600">Saldo ${mLabel(m)}</span><button class="link" data-act="editSaldo" data-v="${m}" style="padding:0">Ubah</button></div>
+    <div class="mono" style="font-weight:700;font-size:15px;color:var(${v>=0?"--teal":"--coral"})">${rp(v)}</div>
+    ${carryIn(m)?`<div class="tiny sub">termasuk sisa ${mLabel(addMonths(m,-1))} ${rp(carryIn(m))}</div>`:""}
+    ${adj?`<div class="tiny sub">termasuk penyesuaian ${adj>0?"+":"−"}${rp(Math.abs(adj))} · <button class="link coral" data-act="clearSaldo" data-v="${m}" style="padding:0;font-size:11px">hapus</button></div>`:""}
+    <label class="tiny sub row" style="gap:6px;margin-top:6px;cursor:pointer"><input type="checkbox" id="carry-${m}" data-ch="carryOver" ${S.carryOver?"checked":""}> Bawa sisa ke bulan berikutnya</label></div>`}
 const stat=(l,v,c)=>`<div class="flat card"><div class="sub tiny" style="font-weight:600">${l}</div><div class="mono" style="font-weight:700;font-size:15px;color:var(${c})">${v}</div></div>`;
 function billRow(b,m,D){
   const prog=b.tenor?`<span class="sub tiny">Cicilan ke-${Math.min(b.tenor,paidCount(b)+1)} dari ${b.tenor}</span>`:`<span class="sub tiny">Rutin tiap tanggal ${b.dueDay}</span>`;
@@ -300,6 +361,10 @@ function vTagihan(){
   const f=e||{kind:"paylater",name:"",amount:"",dueDay:"",tenor:"",startMonth:today0().getDate()>20?addMonths(cur,1):cur};
   const groups=[["kos","Kos"],["paylater","Pay Later"],["tetap","Tagihan rutin lain"]];
   return`
+  <section class="flat card row between">
+    <div><b class="small">Pengingat jatuh tempo</b><div class="sub tiny">Muncul di Ringkasan dan sebagai angka merah di tab Tagihan.</div></div>
+    <div class="row" style="gap:6px">${[1,3,5,7].map(d=>`<button class="btn ${S.remindDays===d?"on teal":""}" data-act="setRemind" data-v="${d}">H-${d}</button>`).join("")}</div>
+  </section>
   <section class="grid3">
     ${stat("Tagihan wajib "+mLabel(cur),rp(W.total),"--plum")}
     ${stat("Cicilan pay later bulan ini",rp(W.pl)+(R.I?` · ${Math.round(R.ratioPL*100)}%`:""),R.ratioPL>0.3?"--coral":"--slate")}
@@ -347,21 +412,24 @@ function billCard(b){
 
 /* ---------- tampilan: Tabungan ---------- */
 function vTabungan(){
-  const cur=mk(today0()), R=recommend(cur), bal=savingsBalance();
-  const monthlyNeed=R.W.total+R.H, target=monthlyNeed*S.targetMonths, pct=target>0?Math.min(100,bal/target*100):0;
+  const cur=mk(today0()), R=recommend(cur), bal=savingsBalance(), emg=emergencyBal(), P=goalPlan(R.setorPay);
+  const monthlyNeed=R.W.total+R.H, target=monthlyNeed*S.targetMonths, pct=target>0?Math.min(100,Math.max(0,emg)/target*100):0;
+  const emMonthly=(S.goals||[]).length?P.emergency*WEEKS_PER_MONTH:R.setor;
   let acc=bal; const proj=Array.from({length:6},(_,i)=>{const m=addMonths(cur,i),r=recommend(m);acc+=r.setor;
     const ends=S.bills.filter(b=>b.kind==="paylater"&&b.tenor&&lastMonth(b)===addMonths(m,-1));return{m,r,acc,ends}});
-  const left=Math.max(0,target-bal), monthsTo=R.setor>0?Math.ceil(left/R.setor):null;
+  const left=Math.max(0,target-emg), monthsTo=emMonthly>0?Math.ceil(left/emMonthly):null;
   const lv=(t,v,desc,c,ok)=>`<div class="flat card stack" style="gap:6px"><div class="row between"><span class="label">${t}</span>${ok?pill("Bisa","--teal"):pill("Belum","--coral")}</div>
      <div class="mono" style="font-weight:700;font-size:18px;color:var(${c})">${rp(v)}<span class="sub tiny"> /bln</span></div>
      <div class="sub tiny">${rp(floorTo(v/WEEKS_PER_MONTH,5000))} per gajian · ${desc}</div></div>`;
   return`
   <section class="raised card stack">
     <div class="row between"><span class="label">Saldo tabungan</span><span class="sub tiny">Dana darurat ${S.targetMonths} bulan</span></div>
-    <div class="row between" style="align-items:flex-end"><div class="hero-num" style="color:var(--blue)">${rp(bal)}</div><div class="mono sub small">target ${rp(target)}</div></div>
+    <div class="row between" style="align-items:flex-end"><div class="hero-num" style="color:var(--blue)">${rp(bal)}</div><div class="mono sub small">dana darurat ${rp(emg)} / ${rp(target)}</div></div>
     <div class="meter" style="--c:var(--blue);height:12px"><span style="width:${pct}%"></span></div>
-    <div class="sub small">${left<=0?"Dana darurat sudah terkumpul. Kelebihan bisa dialihkan ke tujuan lain.":monthsTo?`Kurang ${rp(left)}. Dengan setoran ${R.custom?"pilihanmu":"realistis"} ${rp(R.setor)}/bulan, terkumpul sekitar <b style="color:var(--ink)">${monthsTo} bulan</b> lagi.`:`Kurang ${rp(left)}. Belum ada ruang setoran bulan ini.`} Target = ${S.targetMonths}× (tagihan wajib + makan &amp; transport sebulan).</div>
+    <div class="sub small">${left<=0?"Dana darurat sudah terkumpul. Kelebihan bisa dialihkan ke tujuan lain.":monthsTo?`Kurang ${rp(left)}. Dengan ${rp(emMonthly)}/bulan masuk dana darurat, terkumpul sekitar <b style="color:var(--ink)">${monthsTo} bulan</b> lagi.`:`Kurang ${rp(left)}. Belum ada ruang setoran bulan ini.`} Target = ${S.targetMonths}× (tagihan wajib + makan &amp; transport sebulan).</div>
   </section>
+
+  ${goalsSection(R,P)}
 
   <section class="raised card stack" id="setoranBox">
     <div><h2>Atur setoran</h2><div class="sub small" style="margin-top:2px">Pilih ikut rekomendasi atau tentukan sendiri berapa yang mau ditabung.</div></div>
@@ -388,6 +456,7 @@ function vTabungan(){
     <div class="row" style="align-items:flex-end">
       <div class="field"><label for="dp-amt">Jumlah disetor (Rp)</label><input id="dp-amt" type="number" min="0" step="5000" value="${R.setorPay||""}" placeholder="100000"></div>
       <div class="field"><label for="dp-date">Tanggal</label><input id="dp-date" type="date" value="${iso(today0())}"></div>
+      <div class="field"><label for="dp-goal">Untuk</label><select id="dp-goal"><option value="">Dana darurat</option>${(S.goals||[]).map(g=>`<option value="${g.id}">${esc(g.name)}</option>`).join("")}</select></div>
       <div class="field"><label for="dp-type">Jenis</label><select id="dp-type"><option value="in">Setor ke tabungan</option><option value="out">Ambil dari tabungan</option></select></div>
       <button class="btn teal" data-act="deposit" style="height:40px">Catat</button>
     </div>
@@ -420,12 +489,32 @@ function vTabungan(){
   </section>`
 }
 
+function goalsSection(R,P){const e=ui.editGoal?(S.goals||[]).find(g=>g.id===ui.editGoal):null;
+  return`<section class="raised card stack" id="goalBox"><div><h2>Target tabungan</h2><div class="sub small" style="margin-top:2px">Pisahkan tabungan per tujuan. Setoran tanpa target masuk ke dana darurat.</div></div>
+  ${P.gs.map(x=>{const pct=x.g.target>0?Math.min(100,Math.max(0,x.saved)/x.g.target*100):0,done=x.rem<=0,cf=ui.confirm==="gl-del:"+x.g.id;
+   return`<div class="flat card stack" style="gap:6px"><div class="row between"><b>${esc(x.g.name)}</b>${done?pill("Tercapai","--teal"):x.dl?(x.n>0?pill(`${x.n} gajian lagi`,x.need>R.setorPay?"--coral":"--teal"):pill("Tenggat lewat","--coral")):pill("Tanpa tenggat","--grey")}</div>
+   <div class="row between small"><span class="mono" style="color:var(--blue);font-weight:700">${rp(x.saved)}</span><span class="mono sub">dari ${rp(x.g.target)}</span></div>
+   <div class="meter" style="--c:var(--blue)"><span style="width:${pct}%"></span></div>
+   <div class="tiny sub">${done?"Target sudah terkumpul.":x.dl?`Kurang ${rp(x.rem)} · butuh ${rp(x.need)} per gajian sampai ${dShort(x.dl)} ${x.dl.getFullYear()}.`:`Kurang ${rp(x.rem)}.`}</div>
+   <div class="row" style="gap:6px"><button class="link" data-act="editGoal" data-id="${x.g.id}">Ubah</button>${cf?`<button class="btn coral" data-act="delGoal" data-id="${x.g.id}">Ya, hapus</button><button class="link" data-act="noconfirm">Batal</button><span class="sub tiny">Isinya pindah ke dana darurat.</span>`:`<button class="link coral" data-act="confirm" data-v="gl-del:${x.g.id}">Hapus</button>`}</div></div>`}).join("")}
+  ${P.gs.length?`<div class="pressed stack" style="padding:12px 14px;gap:4px"><div class="label">Pembagian setoran ${rp(R.setorPay)} per gajian</div>
+   ${P.gs.filter(x=>x.alloc>0).map(x=>`<div class="row between small"><span>${esc(x.g.name)}</span><b class="mono">${rp(x.alloc)}</b></div>`).join("")}
+   <div class="row between small"><span>Dana darurat</span><b class="mono">${rp(P.emergency)}</b></div>
+   ${P.totalNeed>R.setorPay?`<div class="tiny coral" style="margin-top:4px">Target bertenggat butuh ${rp(P.totalNeed)} per gajian, lebih besar dari setoranmu. Naikkan setoran, mundurkan tenggat, atau kecilkan target.</div>`:""}</div>`:""}
+  <div class="row" style="align-items:flex-end">
+   <div class="field" style="flex-basis:170px"><label for="gl-name">${e?"Ubah nama target":"Nama target baru"}</label><input id="gl-name" value="${esc(e?e.name:"")}" placeholder="mis. HP baru"></div>
+   <div class="field"><label for="gl-amt">Jumlah target (Rp)</label><input id="gl-amt" type="number" min="0" step="50000" value="${e?e.target:""}" placeholder="2000000"></div>
+   <div class="field"><label for="gl-date">Tenggat (opsional)</label><input id="gl-date" type="date" value="${e?e.deadline||"":""}"></div>
+   <button class="btn teal" data-act="saveGoal" style="height:40px">${e?"Simpan":"+ Tambah target"}</button>${e?`<button class="link" data-act="cancelGoal">Batal</button>`:""}
+  </div><span id="gl-err" class="coral small"></span></section>`}
+
 /* ---------- tampilan: Pengeluaran ---------- */
 function vPengeluaran(){
   const m=S.activeMonth, list=S.expenses.filter(e=>e.date.slice(0,7)===m).sort((a,b)=>a.date<b.date?1:-1), tot=list.reduce((a,e)=>a+e.amount,0);
   const by=CATS.map(c=>({c,amt:list.filter(e=>(e.category||"lain")===c[0]).reduce((a,e)=>a+e.amount,0)})).filter(x=>x.amt>0);
   const f=ui.form;
   return`${monthChips()}
+  <section class="grid3">${stat("Pendapatan tercatat",rp(monthIncome(m)),"--teal")}${stat("Pengeluaran & setoran",rp(tot),"--coral")}${saldoCard(m)}</section>
   <section class="raised card stack">
     <h2>Catat pengeluaran</h2>
     <div class="row" style="align-items:flex-end">
@@ -435,15 +524,65 @@ function vPengeluaran(){
       <div class="field"><label for="ex-date">Tanggal</label><input id="ex-date" type="date" value="${f.date||iso(today0())}"></div>
       <button class="btn teal" data-act="addExp" style="height:40px">+ Tambah</button>
     </div><span id="ex-err" class="coral small"></span>
+    ${ui.flash?`<div class="small" style="color:var(${ui.flashC||"--teal"})">${ui.flash}</div>`:""}
   </section>
+  ${budgetSection()}
+  ${chartSection(m)}
   ${by.length?`<section class="flat card stack" style="gap:8px"><div class="row between"><span class="label">Per kategori · ${mLabel(m)}</span><span class="mono" style="font-weight:700">${rp(tot)}</span></div>
     ${by.map(x=>`<div><div class="row between small"><span>${x.c[1]}</span><b class="mono">${rp(x.amt)}</b></div><div class="meter" style="--c:var(${x.c[2]})"><span style="width:${x.amt/tot*100}%"></span></div></div>`).join("")}</section>`:""}
   <section class="stack" style="gap:8px">
     ${list.length?list.map(e=>{const c=CATS.find(c=>c[0]===e.category)||CATS[6];return`<div class="flat" style="padding:10px 14px;display:flex;justify-content:space-between;align-items:center;gap:10px">
-      <div style="min-width:0"><div style="font-weight:600">${esc(e.desc)}</div><div class="tiny sub">${dShort(parse(e.date))} · <span style="color:var(${c[2]});font-weight:600">${c[1]}</span>${e.billId?" · dari tagihan":""}</div></div>
+      <div style="min-width:0"><div style="font-weight:600">${esc(e.desc)}</div><div class="tiny sub">${dShort(parse(e.date))} · <span style="color:var(${c[2]});font-weight:600">${c[1]}</span>${e.billId?" · dari tagihan":""}${e.recurId?" · rutin":""}</div></div>
       <div class="row" style="gap:8px;flex-wrap:nowrap"><span class="mono" style="font-weight:700;color:var(--coral)">${rp(e.amount)}</span><button class="link" data-act="delExp" data-id="${e.id}" aria-label="Hapus">✕</button></div></div>`}).join(""):`<div class="flat empty">Belum ada pengeluaran di ${mLabel(m)}.</div>`}
-  </section>`
+  </section>
+  ${recurSection()}`
 }
+function budgetSection(){const st=budgetStatus();
+  return`<section class="raised card stack" id="budgetBox"><div><h2>Batas belanja</h2><div class="sub small" style="margin-top:2px">Minggu dihitung dari gajian Sabtu sampai Jumat. Bulan dihitung kalender.</div></div>
+  ${st.length?st.map(x=>{const col=x.pct>=1?"--coral":x.pct>=0.8?"--amber":"--teal",cf=ui.confirm==="bg-del:"+x.cat,daysLeft=daysBetween(today0(),x.to)+1;
+   return`<div class="stack" style="gap:4px"><div class="row between small"><span><span class="dot" style="--c:var(${x.c[2]});display:inline-block;margin-right:6px"></span><b>${x.c[1]}</b> <span class="sub tiny">${x.period==="minggu"?`${x.from.getDate()} ${BLN[x.from.getMonth()]}–${x.to.getDate()} ${BLN[x.to.getMonth()]}`:"bulan ini"}</span></span>
+   <span class="row" style="gap:6px"><b class="mono" style="color:var(${col})">${rp(x.spent)}</b><span class="sub tiny mono">/ ${rp(x.amount)}</span>${cf?`<button class="btn coral" data-act="delBudget" data-v="${x.cat}" style="padding:4px 10px">Hapus</button><button class="link" data-act="noconfirm">Batal</button>`:`<button class="link coral" data-act="confirm" data-v="bg-del:${x.cat}" aria-label="Hapus batas ${x.c[1]}">✕</button>`}</span></div>
+   <div class="meter" style="--c:var(${col})"><span style="width:${Math.min(100,x.pct*100)}%"></span></div>
+   <div class="tiny" style="color:var(${col})">${x.pct>=1?`Lewat ${rp(x.spent-x.amount)}`:`Sisa ${rp(x.amount-x.spent)} · sekitar ${rp(floorTo((x.amount-x.spent)/Math.max(1,daysLeft),1000))} per hari untuk ${daysLeft} hari lagi`}</div></div>`}).join(""):`<div class="sub small">Belum ada batas. Contoh: makan Rp280.000 per minggu gajian.</div>`}
+  <div class="row" style="align-items:flex-end">
+   <div class="field"><label for="bg-cat">Kategori</label><select id="bg-cat">${CATS.filter(c=>!["tabungan","tempat","cicilan"].includes(c[0])).map(c=>`<option value="${c[0]}">${c[1]}</option>`).join("")}</select></div>
+   <div class="field"><label for="bg-amt">Batas (Rp)</label><input id="bg-amt" type="number" min="0" step="10000" placeholder="${S.dailyLiving*7}"></div>
+   <div class="field"><label for="bg-per">Per</label><select id="bg-per"><option value="minggu">Minggu gajian</option><option value="bulan">Bulan</option></select></div>
+   <button class="btn teal" data-act="saveBudget" style="height:40px">Simpan batas</button>
+  </div><span id="bg-err" class="coral small"></span>
+  <div class="sub tiny">Simpan lagi untuk kategori yang sama kalau mau mengubah batasnya.</div></section>`}
+function chartSection(m){const months=Array.from({length:6},(_,i)=>addMonths(m,i-5)),cats=CATS.filter(c=>c[0]!=="tabungan");
+  const data=months.map(k=>{const by={};S.expenses.forEach(e=>{const c=e.category||"lain";if(e.date.slice(0,7)===k&&c!=="tabungan"&&e.amount>0)by[c]=(by[c]||0)+e.amount});return{k,by,tot:Object.values(by).reduce((a,b)=>a+b,0)}});
+  const max=Math.max(1,...data.map(d=>d.tot)),used=cats.filter(c=>data.some(d=>d.by[c[0]]));
+  if(!used.length)return`<section class="raised card stack"><h2>Pengeluaran 6 bulan</h2><div class="sub small">Grafik muncul setelah ada pengeluaran tercatat.</div></section>`;
+  const cur=data[5],prev=data[4];let insight="";
+  if(prev.tot>0){const diff=cur.tot-prev.tot;insight=diff===0?`Total ${mLabel(cur.k)} sama dengan ${mLabel(prev.k)} (${rp(cur.tot)}).`:`Total ${mLabel(cur.k)} ${diff>0?"naik":"turun"} ${Math.round(Math.abs(diff)/prev.tot*100)}% dari ${mLabel(prev.k)} (${rp(prev.tot)} → ${rp(cur.tot)}).`;
+    const ch=used.map(c=>({c,d:(cur.by[c[0]]||0)-(prev.by[c[0]]||0)})).sort((a,b)=>b.d-a.d)[0];if(ch&&ch.d>0)insight+=` Kenaikan terbesar: ${ch.c[1]} +${rp(ch.d)}.`}
+  return`<section class="raised card stack"><div class="row between"><h2>Pengeluaran 6 bulan</h2><span class="sub tiny">tanpa setoran tabungan · ketuk bulan untuk membuka</span></div>
+  <div class="mchart" role="img" aria-label="Pengeluaran per bulan: ${data.map(d=>mLabel(d.k)+" "+rp(d.tot)).join(", ")}">${data.map(d=>`<button class="col ${d.k===m?"cur":""}" data-act="month" data-v="${d.k}" title="${mLabel(d.k)}: ${rp(d.tot)}"><span class="mono tiny">${d.tot?rpk(d.tot).replace("Rp ",""):"0"}</span><span class="area"><span class="stackbar" style="height:${d.tot/max*100}%">${used.filter(c=>d.by[c[0]]).map(c=>`<span style="--c:var(${c[2]});flex:${d.by[c[0]]}" title="${c[1]}: ${rp(d.by[c[0]])}"></span>`).join("")}</span></span><span class="tiny sub lbl">${BLN[+d.k.slice(5)-1]}</span></button>`).join("")}</div>
+  <div class="label">${mLabel(cur.k)}</div>
+  <div class="legend">${used.map(c=>`<div><span class="dot" style="--c:var(${c[2]})"></span>${c[1]}<b>${rpk(cur.by[c[0]]||0)}</b></div>`).join("")}</div>
+  ${insight?`<div class="sub small">${insight}</div>`:""}</section>`}
+function recurSection(){const list=S.recurring||[];
+  return`<section class="raised card stack" id="recurBox"><div><h2>Pengeluaran rutin</h2><div class="sub small" style="margin-top:2px">Dicatat otomatis ke daftar pengeluaran setiap jadwalnya tiba, saat web ini dibuka.</div></div>
+  ${list.length?`<div class="stack" style="gap:8px">${list.map(r=>{const c=CATS.find(x=>x[0]===r.category)||CATS[6],nx=nextRecur(r),cf=ui.confirm==="rc-del:"+r.id;
+   return`<div class="flat" style="padding:10px 14px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between">
+   <div style="min-width:0;flex:1 1 180px"><div style="font-weight:600">${esc(r.desc)} <span class="mono" style="color:var(--coral)">${rp(r.amount)}</span></div>
+   <div class="tiny sub">${r.freq==="mingguan"?"Tiap "+WDAY[r.day]:"Tiap tanggal "+r.day} · <span style="color:var(${c[2]});font-weight:600">${c[1]}</span> · ${r.paused?"dijeda":nx?"berikutnya "+dShort(nx):""}</div></div>
+   <div class="row" style="gap:6px"><button class="link" data-act="toggleRecur" data-id="${r.id}">${r.paused?"Lanjutkan":"Jeda"}</button>${cf?`<button class="btn coral" data-act="delRecur" data-id="${r.id}">Ya, hapus</button><button class="link" data-act="noconfirm">Batal</button>`:`<button class="link coral" data-act="confirm" data-v="rc-del:${r.id}">Hapus</button>`}</div></div>`}).join("")}</div>`:`<div class="sub small">Belum ada. Contoh: pulsa tiap tanggal 5, bensin tiap Sabtu.</div>`}
+  <div class="row" style="align-items:flex-end">
+   <div class="field" style="flex-basis:170px"><label for="rf-desc">Keterangan</label><input id="rf-desc" placeholder="mis. Pulsa &amp; kuota"></div>
+   <div class="field"><label for="rf-amt">Jumlah (Rp)</label><input id="rf-amt" type="number" min="0" placeholder="50000"></div>
+   <div class="field"><label for="rf-cat">Kategori</label><select id="rf-cat">${CATS.filter(c=>c[0]!=="tabungan").map(c=>`<option value="${c[0]}">${c[1]}</option>`).join("")}</select></div>
+  </div>
+  <div class="row" style="align-items:flex-end">
+   <div class="field"><label for="rf-freq">Ulangi</label><select id="rf-freq" data-ch="rfFreq"><option value="bulanan">Tiap bulan</option><option value="mingguan">Tiap minggu</option></select></div>
+   <div class="field" id="rf-dayM"><label for="rf-date">Tanggal</label><input id="rf-date" type="number" min="1" max="31" placeholder="5"></div>
+   <div class="field" id="rf-dayW" hidden><label for="rf-wday">Hari</label><select id="rf-wday">${WDAY.map((d,i)=>`<option value="${i}" ${i===6?"selected":""}>${d}</option>`).join("")}</select></div>
+   <div class="field"><label for="rf-start">Mulai</label><input id="rf-start" type="date" value="${iso(today0())}"></div>
+   <button class="btn teal" data-act="saveRecur" style="height:40px">+ Simpan</button>
+  </div><span id="rf-err" class="coral small"></span>
+  <div class="sub tiny">Kalau biaya ini sudah termasuk "makan &amp; transport per hari" di tab Tabungan, kurangi angka harian itu supaya rekomendasi tidak terhitung dua kali.</div></section>`}
 
 /* ---------- tampilan: Gaji ---------- */
 function vGaji(){
@@ -467,13 +606,16 @@ function vGaji(){
   <h2>Absensi &amp; lembur — ${mLabel(m)}</h2>
   ${weeks.length?weeks.map((x,wi)=>{const w=x.w;return`<section class="raised card stack">
     <div class="row between"><div class="row" style="gap:8px"><b>Minggu ${wi+1}</b><input type="date" id="ws-${w.id}" value="${w.start}" data-ch="wstart" data-id="${w.id}" style="padding:5px 8px;font-size:12px"></div>
-      <div class="row" style="gap:8px"><span class="mono teal" style="font-weight:700">${rp(x.c.total)}</span><span class="sub tiny">cair ${dShort(payday(w))}</span><button class="link" data-act="dupWeek" data-id="${w.id}">Duplikat</button>${S.weeks.length>1?`<button class="link coral" data-act="delWeek" data-id="${w.id}">Hapus</button>`:""}</div></div>
-    <div class="days">${w.days.map((d,di)=>`<div class="flat day" style="border-radius:12px"><span class="tiny sub" style="font-weight:700">${DAYS[di]}</span>
+      <div class="row" style="gap:8px"><span class="mono teal" style="font-weight:700">${rp(x.c.total)}</span><span class="sub tiny">cair ${dShort(payday(w))}</span><button class="link" data-act="slip" data-id="${w.id}">${ui.slip===w.id?"Tutup slip":"Slip"}</button><button class="link" data-act="dupWeek" data-id="${w.id}">Duplikat</button>${ui.confirm==="wk:"+w.id?`<button class="btn coral" data-act="delWeek" data-id="${w.id}">Ya, hapus minggu</button><button class="link" data-act="noconfirm">Batal</button>`:`<button class="link coral" data-act="confirm" data-v="wk:${w.id}">Hapus</button>`}</div></div>
+    <div class="days">${w.days.map((d,di)=>`<div class="flat day" style="border-radius:12px;${ui.editDay&&ui.editDay.wid===w.id&&ui.editDay.i===di?"box-shadow:inset 3px 3px 6px var(--lo),inset -3px -3px 6px var(--hi)":""}"><button class="link" data-act="editDay" data-id="${w.id}" data-i="${di}" title="Ubah ${dShort(addDays(parse(w.start),di))}" style="padding:0;display:flex;flex-direction:column;align-items:center;line-height:1.2"><span class="tiny sub" style="font-weight:700">${DAYS[di]}</span><span class="mono" style="font-size:11px;color:var(--ink);font-weight:700">${addDays(parse(w.start),di).getDate()}${d.note?"•":""}</span></button>
       <select id="d-${w.id}-${di}" data-ch="dstatus" data-id="${w.id}" data-i="${di}" aria-label="Status ${DAYS[di]}" style="color:var(${d.status==="hadir"?"--teal":d.status==="lembur_merah"?"--amber":d.status==="libur"?"--sub":"--coral"})">${STATUS.map(s=>`<option value="${s[0]}" ${d.status===s[0]?"selected":""}>${s[1]}</option>`).join("")}</select>
       ${d.status==="hadir"?`<input id="jb-${w.id}-${di}" type="number" min="0" step="0.5" placeholder="0" value="${d.jamBiasa||""}" data-ch="jam" data-k="jamBiasa" data-id="${w.id}" data-i="${di}" aria-label="Jam lembur biasa ${DAYS[di]}">`:d.status==="lembur_merah"?`<input id="jm-${w.id}-${di}" type="number" min="0" step="0.5" placeholder="0" value="${d.jamMerah||""}" data-ch="jam" data-k="jamMerah" data-id="${w.id}" data-i="${di}" style="color:var(--amber)" aria-label="Jam lembur merah ${DAYS[di]}">`:`<span class="tiny sub">—</span>`}</div>`).join("")}</div>
+    ${ui.editDay&&ui.editDay.wid===w.id?dayEditor(w,ui.editDay.i):""}
+    ${ui.slip===w.id?(()=>{const t=slipText(w);return`<div class="stack" style="gap:8px"><textarea id="slipBox" class="slip" readonly rows="${t.split("\n").length}" aria-label="Slip gaji">${esc(t)}</textarea><div class="row"><button class="btn teal" data-act="copySlip" data-id="${w.id}">Salin slip</button><span id="slipMsg" class="small teal"></span></div></div>`})():""}
     <div class="tiny sub row" style="gap:14px">Pokok <b style="color:var(--ink)">${rp(x.c.pokok)}</b> Lembur <b style="color:var(--ink)">${rp(x.c.lembur)}</b> Bonus hadir (${x.c.hadir} hari) <b style="color:var(--ink)">${rp(x.c.bonus)}</b></div>
   </section>`}).join(""):`<div class="flat empty">Belum ada minggu tercatat di ${mLabel(m)}.</div>`}
-  <div><button class="btn teal" data-act="addWeek">+ Tambah minggu</button></div>
+  <div class="row"><button class="btn teal" data-act="addWeek">+ Tambah minggu</button><span class="sub tiny">Ketuk nama hari / tanggal untuk ubah tanggal, jam lembur, catatan, atau hapus.</span></div>
+  ${rincian(m)}
   <section class="raised card stack"><h2>Estimasi THR</h2>
     <div class="row"><label for="joinDate" class="sub small" style="font-weight:600">Tanggal masuk kerja</label><input type="date" id="joinDate" value="${S.joinDate}" data-ch="joinDate"></div>
     ${thr||`<div class="sub small">Isi tanggal masuk kerja untuk melihat estimasi THR.</div>`}</section>
@@ -482,6 +624,44 @@ function vGaji(){
    <tbody>${S.tiers.map(x=>`<tr style="${x.id===S.tierId?"background:var(--tint)":""}"><td style="font-weight:600;white-space:nowrap">${x.label}</td>${["harian","bonus","lemburBiasa","lemburMerah"].map(k=>`<td><input id="t-${x.id}-${k}" type="number" min="0" value="${x[k]}" data-ch="tier" data-id="${x.id}" data-k="${k}" style="width:100px;padding:5px 7px;font-size:12px"></td>`).join("")}</tr>`).join("")}</tbody></table></div>
    <div class="sub tiny">Ubah angka sesuai slip gaji terbaru — tersimpan otomatis. Bonus hadir dihitung per hari hadir; lembur merah tidak dihitung hadir.</div></section>`
 }
+
+function slipText(w){const r=rate(),c=calcWeek(w),st=parse(w.start),en=addDays(st,6),pd=payday(w);
+  const jb=w.days.reduce((a,d)=>a+(d.jamBiasa||0),0),jm=w.days.reduce((a,d)=>a+(d.jamMerah||0),0),line="-".repeat(40);
+  const L=["SLIP GAJI MINGGUAN",`Periode : ${dShort(st)} – ${dShort(en)} ${en.getFullYear()}`,`Cair    : ${dShort(pd)} ${pd.getFullYear()}`,`Tarif   : ${r.label}`,line,
+    `Upah pokok   ${c.hadir} hari × ${rp(r.harian)}`,`             = ${rp(c.pokok)}`,
+    `Bonus hadir  ${c.hadir} hari × ${rp(r.bonus)}`,`             = ${rp(c.bonus)}`];
+  if(jb)L.push(`Lembur biasa ${jb} jam × ${rp(r.lemburBiasa)}`,`             = ${rp(jb*r.lemburBiasa)}`);
+  if(jm)L.push(`Lembur merah ${jm} jam × ${rp(r.lemburMerah)}`,`             = ${rp(jm*r.lemburMerah)}`);
+  L.push(line,`TOTAL        ${rp(c.total)}`,"","Rincian harian:");
+  w.days.forEach((d,i)=>{const dt=addDays(st,i),s=(STATUS.find(x=>x[0]===d.status)||[0,d.status])[1],j=(d.jamBiasa||0)+(d.jamMerah||0);
+    L.push(`${dShort(dt).padEnd(12)} ${s}${j?` +${j} jam`:""}${d.note?` (${d.note})`:""}`)});
+  return L.join("\n")}
+function dayEditor(w,i){const d=w.days[i],dt=addDays(parse(w.start),i),cf=ui.confirm==="day:"+w.id+":"+i;
+  return`<div class="pressed stack" id="dayEditor" style="padding:14px;gap:10px">
+    <div class="row between"><b>${["Minggu","Senin","Selasa","Rabu","Kamis","Jumat","Sabtu"][dt.getDay()]}, ${dt.getDate()} ${BULAN[dt.getMonth()]} ${dt.getFullYear()}</b><button class="link" data-act="closeDay">Tutup ✕</button></div>
+    <div class="row" style="align-items:flex-end">
+      <div class="field"><label for="de-date">Tanggal</label><input id="de-date" type="date" value="${iso(dt)}"></div>
+      <div class="field"><label for="de-status">Status</label><select id="de-status">${STATUS.map(s=>`<option value="${s[0]}" ${d.status===s[0]?"selected":""}>${s[1]}</option>`).join("")}</select></div>
+      <div class="field"><label for="de-jam">Jam lembur</label><input id="de-jam" type="number" min="0" step="0.5" value="${(d.status==="lembur_merah"?d.jamMerah:d.jamBiasa)||""}" placeholder="0"></div>
+    </div>
+    <div class="field" style="flex:none"><label for="de-note">Catatan (opsional)</label><input id="de-note" value="${esc(d.note||"")}" placeholder="mis. lembur bongkar muat"></div>
+    <div class="sub tiny">Jam lembur dihitung lembur biasa untuk status Hadir dan lembur tanggal merah untuk status Lembur Merah. Status lain tidak dibayar lembur. Ganti tanggal untuk memindahkan isian ke hari lain.</div>
+    <div class="row" style="gap:8px"><button class="btn teal" data-act="saveDay" data-id="${w.id}" data-i="${i}">Simpan</button>
+      ${cf?`<button class="btn coral" data-act="clearDay" data-id="${w.id}" data-i="${i}">Ya, hapus isian</button><button class="link" data-act="noconfirm">Batal</button>`:`<button class="link coral" data-act="confirm" data-v="day:${w.id}:${i}">Hapus isian tanggal ini</button>`}</div>
+    <span id="de-err" class="coral small"></span></div>`}
+function rincian(m){const r=rate(),rows=[];
+  S.weeks.forEach(w=>w.days.forEach((d,i)=>{const dt=addDays(parse(w.start),i);if(mk(dt)!==m)return;
+    if((d.jamBiasa||0)>0||(d.jamMerah||0)>0||["izin","alpha","lembur_merah"].includes(d.status)||d.note)rows.push({w,i,d,dt})}));
+  rows.sort((a,b)=>a.dt-b.dt);
+  const tot=rows.reduce((a,x)=>a+(x.d.jamBiasa||0)*r.lemburBiasa+(x.d.jamMerah||0)*r.lemburMerah,0);
+  return`<section class="raised card stack"><div class="row between"><h2>Rincian lembur &amp; absensi — ${mLabel(m)}</h2><span class="mono amber" style="font-weight:700">${rp(tot)}</span></div>
+  ${rows.length?`<div class="tbl-wrap"><table style="min-width:460px"><thead><tr><th>Tanggal</th><th>Status</th><th class="r">Jam</th><th class="r">Upah lembur</th><th></th></tr></thead><tbody>
+  ${rows.map(x=>{const jam=(x.d.jamBiasa||0)+(x.d.jamMerah||0),up=(x.d.jamBiasa||0)*r.lemburBiasa+(x.d.jamMerah||0)*r.lemburMerah,st=STATUS.find(s=>s[0]===x.d.status),k=x.w.id+":"+x.i;
+    return`<tr><td style="white-space:nowrap;font-weight:600">${dShort(x.dt)}${x.d.note?`<div class="tiny sub" style="font-weight:400">${esc(x.d.note)}</div>`:""}</td>
+    <td>${pill(st?st[1]:x.d.status,x.d.status==="hadir"?"--teal":x.d.status==="lembur_merah"?"--amber":"--coral")}</td><td class="r">${jam||"—"}</td><td class="r">${up?rp(up):"—"}</td>
+    <td style="white-space:nowrap;text-align:right"><button class="link" data-act="editDay" data-id="${x.w.id}" data-i="${x.i}">Ubah</button>${ui.confirm==="rc:"+k?`<button class="btn coral" data-act="clearDay" data-id="${x.w.id}" data-i="${x.i}" style="padding:5px 10px">Hapus</button><button class="link" data-act="noconfirm">Batal</button>`:`<button class="link coral" data-act="confirm" data-v="rc:${k}">Hapus</button>`}</td></tr>`}).join("")}
+  </tbody></table></div>`:`<div class="sub small">Belum ada lembur, izin, atau alpha tercatat di ${mLabel(m)}.</div>`}
+  <div class="sub tiny">Hapus = kembalikan tanggal itu ke status normal tanpa lembur (Minggu jadi Libur, hari lain Hadir).</div></section>`}
 
 /* ---------- data ---------- */
 function vData(){return`<div class="row between"><h2>Cadangan data</h2><span class="sub tiny">Data hanya ada di browser ini. Salin secara berkala untuk backup atau pindah HP.</span></div>
@@ -493,10 +673,12 @@ function vData(){return`<div class="row between"><h2>Cadangan data</h2><span cla
 /* ---------- render ---------- */
 const TABS=[["ringkasan","Ringkasan"],["tagihan","Tagihan"],["tabungan","Tabungan"],["pengeluaran","Pengeluaran"],["gaji","Gaji"]];
 function render(){
-  document.getElementById("tabs").innerHTML=TABS.map(([k,l])=>`<button class="${S.tab===k?"on":""}" data-act="tab" data-v="${k}" aria-current="${S.tab===k?"page":"false"}">${l}</button>`).join("");
+  const rc=reminders().length;
+  document.getElementById("tabs").innerHTML=TABS.map(([k,l])=>`<button class="${S.tab===k?"on":""}" data-act="tab" data-v="${k}" aria-current="${S.tab===k?"page":"false"}">${l}${k==="tagihan"&&rc?`<span class="badge" aria-label="${rc} tagihan segera jatuh tempo">${rc}</span>`:""}</button>`).join("");
   const v={ringkasan:vRingkasan,tagihan:vTagihan,tabungan:vTabungan,pengeluaran:vPengeluaran,gaji:vGaji}[S.tab]||vRingkasan;
   document.getElementById("view").innerHTML=v();
   document.getElementById("dataBox").innerHTML=vData();
+  ui.flash="";ui.flashC="";
 }
 
 /* ---------- aksi ---------- */
@@ -504,7 +686,7 @@ const $=id=>document.getElementById(id);
 function addExpenseRec(o){const e={id:uid(),...o};S.expenses.push(e);return e}
 document.addEventListener("click",ev=>{
   const el=ev.target.closest("[data-act]");if(!el)return;const a=el.dataset.act,id=el.dataset.id;
-  if(a==="tab"){S.tab=el.dataset.v;ui.editBill=null;ui.confirm=null;commit();window.scrollTo({top:0});return}
+  if(a==="tab"){S.tab=el.dataset.v;ui.editBill=null;ui.confirm=null;ui.editDay=null;ui.editSaldo=null;ui.editGoal=null;ui.slip=null;commit();window.scrollTo({top:0});return}
   if(a==="month"){S.activeMonth=el.dataset.v;return commit()}
   if(a==="confirm"){ui.confirm=el.dataset.v;return render()}
   if(a==="noconfirm"){ui.confirm=null;return render()}
@@ -521,34 +703,88 @@ document.addEventListener("click",ev=>{
     if(ui.editBill){const b=S.bills.find(x=>x.id===ui.editBill);Object.assign(b,{kind,name,amount,dueDay,startMonth,tenor})}
     else S.bills.push({id:uid(),kind,name,amount,dueDay,startMonth,tenor});
     ui.editBill=null;return commit()}
-  if(a==="deposit"){const amt=num($("dp-amt").value),date=$("dp-date").value,out=$("dp-type").value==="out";
+  if(a==="deposit"){const amt=num($("dp-amt").value),date=$("dp-date").value,out=$("dp-type").value==="out",gid=$("dp-goal").value,g=(S.goals||[]).find(x=>x.id===gid);
     if(amt<=0||!date){$("dp-err").textContent="Isi jumlah dan tanggal setoran.";return}
-    if(out&&amt>savingsBalance()){$("dp-err").textContent=`Saldo tabungan hanya ${rp(savingsBalance())}.`;return}
-    addExpenseRec({desc:out?"Ambil dari tabungan":"Setor tabungan",amount:out?-amt:amt,date,category:"tabungan"});return commit()}
+    const avail=gid?goalSaved(gid):emergencyBal();
+    if(out&&amt>avail){$("dp-err").textContent=`Saldo ${g?esc(g.name):"dana darurat"} hanya ${rp(avail)}.`;return}
+    const rec={desc:(out?"Ambil dari tabungan":"Setor tabungan")+(g?" · "+g.name:""),amount:out?-amt:amt,date,category:"tabungan"};if(gid)rec.goalId=gid;
+    addExpenseRec(rec);return commit()}
+  if(a==="saveGoal"){const name=$("gl-name").value.trim(),target=num($("gl-amt").value),deadline=$("gl-date").value;
+    const err=!name?"Isi nama target.":target<=0?"Isi jumlah target.":(!ui.editGoal&&deadline&&parse(deadline)<today0())?"Tenggat sudah lewat.":"";
+    if(err){$("gl-err").textContent=err;return}
+    if(ui.editGoal){const g=S.goals.find(x=>x.id===ui.editGoal);if(g)Object.assign(g,{name,target,deadline})}else S.goals.push({id:uid(),name,target,deadline});
+    ui.editGoal=null;return commit()}
+  if(a==="editGoal"){ui.editGoal=id;render();const f=$("gl-name");f&&f.scrollIntoView({behavior:"smooth",block:"center"});return}
+  if(a==="cancelGoal"){ui.editGoal=null;return render()}
+  if(a==="delGoal"){S.goals=S.goals.filter(g=>g.id!==id);S.expenses.forEach(e=>{if(e.goalId===id)delete e.goalId});ui.confirm=null;if(ui.editGoal===id)ui.editGoal=null;return commit()}
+  if(a==="setRemind"){S.remindDays=+el.dataset.v;return commit()}
+  if(a==="saveBudget"){const cat=$("bg-cat").value,amount=num($("bg-amt").value),period=$("bg-per").value;
+    if(amount<=0){$("bg-err").textContent="Isi batas belanja.";return}
+    S.budgets[cat]={amount,period};return commit()}
+  if(a==="delBudget"){delete S.budgets[el.dataset.v];ui.confirm=null;return commit()}
+  if(a==="saveRecur"){const desc=$("rf-desc").value.trim(),amount=num($("rf-amt").value),category=$("rf-cat").value,freq=$("rf-freq").value,start=$("rf-start").value;
+    const day=freq==="mingguan"?+$("rf-wday").value:Math.round(num($("rf-date").value));
+    const err=!desc?"Isi keterangan.":amount<=0?"Isi jumlah.":(freq==="bulanan"&&(day<1||day>31))?"Tanggal harus 1–31.":!start?"Pilih tanggal mulai.":"";
+    if(err){$("rf-err").textContent=err;return}
+    S.recurring.push({id:uid(),desc,amount,category,freq,day,start});const n=runRecurring();
+    ui.flash=n?`${n} pengeluaran rutin yang jadwalnya sudah lewat langsung dicatat.`:"Pengeluaran rutin disimpan.";return commit()}
+  if(a==="toggleRecur"){const r=S.recurring.find(x=>x.id===id);if(r){r.paused=!r.paused;if(!r.paused)r.start=iso(today0())}runRecurring();return commit()}
+  if(a==="delRecur"){S.recurring=S.recurring.filter(r=>r.id!==id);ui.confirm=null;return commit()}
+  if(a==="slip"){ui.slip=ui.slip===id?null:id;return render()}
+  if(a==="copySlip"){const w=S.weeks.find(x=>x.id===id);if(!w)return;const txt=slipText(w),msg=$("slipMsg");
+    const fb=()=>{const b=$("slipBox");if(b){b.focus();b.select()}if(msg)msg.textContent="Teks sudah dipilih, salin lewat menu HP."};
+    try{navigator.clipboard.writeText(txt).then(()=>{if(msg)msg.textContent="Slip tersalin."},fb)}catch(e){fb()}return}
   if(a==="setMode"){S.setoranMode=el.dataset.v;if(S.setoranMode==="custom"&&!S.setoranAmount){const R=recommend(mk(today0()));S.setoranAmount=R.perPay;S.setoranUnit="gajian"}return commit()}
   if(a==="quickSetor"){S.setoranAmount=+el.dataset.v;S.setoranUnit="gajian";return commit()}
   if(a==="addExp"){const desc=$("ex-desc").value.trim(),amt=num($("ex-amt").value),date=$("ex-date").value,cat=$("ex-cat").value;
     if(!desc||amt<=0||!date){ui.form={desc,amt:$("ex-amt").value,date,cat};render();$("ex-err").textContent="Isi keterangan, jumlah, dan tanggal.";return}
-    addExpenseRec({desc,amount:amt,date,category:cat});ui.form={cat,date};S.activeMonth=date.slice(0,7);return commit()}
+    addExpenseRec({desc,amount:amt,date,category:cat});ui.form={cat,date};S.activeMonth=date.slice(0,7);
+    const bs=budgetStatus().find(x=>x.cat===cat);
+    if(bs&&bs.pct>=1){ui.flash=`Tersimpan. Batas ${bs.c[1]} ${bs.period==="minggu"?"minggu ini":"bulan ini"} sudah lewat ${rp(bs.spent-bs.amount)}.`;ui.flashC="--coral"}
+    else if(bs&&bs.pct>=0.8){ui.flash=`Tersimpan. ${bs.c[1]} sudah ${Math.round(bs.pct*100)}% dari batas, sisa ${rp(bs.amount-bs.spent)}.`;ui.flashC="--amber"}
+    else ui.flash="Tersimpan.";
+    return commit()}
   if(a==="delExp"){const e=S.expenses.find(x=>x.id===id);if(e&&e.billId)Object.keys(S.paid).forEach(k=>{if(S.paid[k]===id)delete S.paid[k]});S.expenses=S.expenses.filter(x=>x.id!==id);return commit()}
   if(a==="tier"){S.tierId=el.dataset.v;return commit()}
   if(a==="resetTiers"){S.tiers=JSON.parse(JSON.stringify(DEFAULT_TIERS));return commit()}
   if(a==="addWeek"){const ws=S.weeks.filter(w=>w.start.slice(0,7)===S.activeMonth).sort((x,y)=>x.start<y.start?-1:1);const last=ws[ws.length-1]||S.weeks.slice().sort((x,y)=>x.start<y.start?-1:1).pop();
     const st=last?iso(addDays(parse(last.start),7)):defaultThursday();S.weeks.push(newWeek(st));S.activeMonth=st.slice(0,7);return commit()}
   if(a==="dupWeek"){const w=S.weeks.find(x=>x.id===id);const st=iso(addDays(parse(w.start),7));S.weeks.push(newWeek(st,w.days));S.activeMonth=st.slice(0,7);return commit()}
-  if(a==="delWeek"){if(S.weeks.length>1)S.weeks=S.weeks.filter(w=>w.id!==id);return commit()}
+  if(a==="delWeek"){S.weeks=S.weeks.filter(w=>w.id!==id);if(ui.editDay&&ui.editDay.wid===id)ui.editDay=null;ui.confirm=null;return commit()}
+  if(a==="editDay"){const w=S.weeks.find(x=>x.id===id);if(!w)return;ui.editDay={wid:id,i:+el.dataset.i};ui.confirm=null;S.activeMonth=w.start.slice(0,7);render();const e=$("dayEditor");e&&e.scrollIntoView({behavior:"smooth",block:"center"});return}
+  if(a==="closeDay"){ui.editDay=null;ui.confirm=null;return render()}
+  if(a==="clearDay"){const w=S.weeks.find(x=>x.id===id),i=+el.dataset.i;if(w){w.days[i]=emptyDay(i)}ui.confirm=null;if(ui.editDay&&ui.editDay.wid===id&&ui.editDay.i===i)ui.editDay=null;return commit()}
+  if(a==="saveDay"){const w=S.weeks.find(x=>x.id===id),i=+el.dataset.i;if(!w)return;
+    const date=$("de-date").value,status=$("de-status").value,jam=Math.max(0,parseFloat($("de-jam").value)||0),note=$("de-note").value.trim();
+    if(!date){$("de-err").textContent="Pilih tanggal.";return}
+    if(jam>24){$("de-err").textContent="Jam lembur maksimal 24.";return}
+    const nd={status,jamBiasa:status==="hadir"?jam:0,jamMerah:status==="lembur_merah"?jam:0,note};
+    const dt=parse(date),orig=addDays(parse(w.start),i);
+    if(+dt===+orig){w.days[i]=nd;ui.editDay=null;return commit()}
+    let tw=S.weeks.find(x=>{const st=parse(x.start);return dt>=st&&dt<addDays(st,7)});
+    if(!tw){const st=addDays(dt,-((dt.getDay()-4+7)%7));tw={id:uid(),start:iso(st),days:Array.from({length:7},()=>({status:"libur",jamBiasa:0,jamMerah:0}))};S.weeks.push(tw)}
+    const ti=daysBetween(parse(tw.start),dt);
+    w.days[i]={status:"libur",jamBiasa:0,jamMerah:0};tw.days[ti]=nd;
+    ui.editDay={wid:tw.id,i:ti};S.activeMonth=tw.start.slice(0,7);return commit()}
+  if(a==="editSaldo"){ui.editSaldo=el.dataset.v;render();const e=$("sd-val");e&&e.focus();return}
+  if(a==="cancelSaldo"){ui.editSaldo=null;return render()}
+  if(a==="saveSaldo"){const m=el.dataset.v,v=num($("sd-val").value),neg=String($("sd-val").value).trim().startsWith("-");const real=neg?-Math.abs(v):v;
+    S.saldoAdj=S.saldoAdj||{};const base=saldoBase(m),adj=Math.round(real-base);if(adj)S.saldoAdj[m]=adj;else delete S.saldoAdj[m];ui.editSaldo=null;return commit()}
+  if(a==="clearSaldo"){if(S.saldoAdj)delete S.saldoAdj[el.dataset.v];return commit()}
   if(a==="copyData"){const txt=JSON.stringify(S);const done=()=>{const m=$("dataMsg");if(m)m.textContent="Data tersalin. Simpan di catatan atau chat ke diri sendiri."};
     try{navigator.clipboard.writeText(txt).then(done,()=>{ui.copyText=txt;render();const b=$("copyBox");b&&b.select()})}catch(e){ui.copyText=txt;render()}return}
   if(a==="showImport"){ui.importOpen=true;ui.copyText="";return render()}
   if(a==="hideImport"){ui.importOpen=false;return render()}
   if(a==="doImport"){try{const o=JSON.parse($("importBox").value);if(!o||typeof o!=="object")throw 0;
-      if(o.bills||o.weeks){S=Object.assign(defaultState(),o)}else throw 0;ui.importOpen=false;commit();$("dataMsg").textContent="Data dipulihkan."}
+      if(o.bills||o.weeks){S=Object.assign(defaultState(),o);runRecurring()}else throw 0;ui.importOpen=false;commit();$("dataMsg").textContent="Data dipulihkan."}
     catch(e){$("dataMsg").textContent="";$("dataMsg").className="small coral";$("dataMsg").textContent="Teks bukan data Dompet Gajian yang valid."}return}
   if(a==="resetAll"){const tab=S.tab;S=defaultState();S.tab=tab;ui.confirm=null;try{localStorage.removeItem(KEY)}catch(e){}return commit()}
 });
 document.addEventListener("change",ev=>{
   const el=ev.target;const c=el.dataset&&el.dataset.ch;if(!c)return;const id=el.dataset.id,i=+el.dataset.i;
-  if(c==="setoranUnit")S.setoranUnit=el.value==="bulan"?"bulan":"gajian";
+  if(c==="rfFreq"){const wk=el.value==="mingguan";$("rf-dayW").hidden=!wk;$("rf-dayM").hidden=wk;return}
+  if(c==="carryOver")S.carryOver=el.checked;
+  else if(c==="setoranUnit")S.setoranUnit=el.value==="bulan"?"bulan":"gajian";
   else if(["dailyLiving","incomeManual","savingsStart","setoranAmount"].includes(c))S[c]=Math.max(0,num(el.value));
   else if(c==="targetMonths")S.targetMonths=Math.min(12,Math.max(1,Math.round(num(el.value))||3));
   else if(c==="joinDate")S.joinDate=el.value;
@@ -560,6 +796,7 @@ document.addEventListener("change",ev=>{
 });
 
 load();
+try{if(runRecurring())save()}catch(e){}
 if(location.hash&&TABS.some(t=>t[0]===location.hash.slice(1)))S.tab=location.hash.slice(1);
 render();
 })();
