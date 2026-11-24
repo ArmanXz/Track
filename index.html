@@ -157,14 +157,14 @@ const num=v=>{const n=parseFloat(String(v).replace(/[^\d.,-]/g,"").replace(/\./g
 /* ---------- state ---------- */
 const emptyDay=i=>({status:i===3?"libur":"hadir",jamBiasa:0,jamMerah:0});
 const newWeek=(start,tpl)=>({id:uid(),start,days:tpl?tpl.map(d=>({status:d.status,jamBiasa:0,jamMerah:0})):Array.from({length:7},(_,i)=>emptyDay(i))});
-function defaultState(){const m=mk(today0());return{v:1,tierId:"gt12",tiers:JSON.parse(JSON.stringify(DEFAULT_TIERS)),weeks:[newWeek(defaultThursday())],expenses:[],joinDate:"",
-  incomeManual:0,dailyLiving:40000,targetMonths:3,savingsStart:0,setoranMode:"rekomendasi",setoranAmount:0,setoranUnit:"gajian",saldoAdj:{},carryOver:true,remindDays:3,recurring:[],recurGen:{},budgets:{},goals:[],
+function defaultState(){const m=mk(today0());return{v:2,tierId:"gt12",tiers:JSON.parse(JSON.stringify(DEFAULT_TIERS)),weeks:[newWeek(defaultThursday())],expenses:[],joinDate:"",
+  incomeManual:0,dailyLiving:40000,targetMonths:3,savingsStart:0,setoranMode:"rekomendasi",setoranAmount:0,setoranUnit:"gajian",saldoAdj:{},saldoAdjNow:{},carryOver:false,remindDays:3,recurring:[],recurGen:{},budgets:{},goals:[],
   bills:[{id:uid(),name:"Uang Kos",kind:"kos",amount:450000,dueDay:21,startMonth:m,tenor:0}],
   paid:{},activeMonth:m,tab:"ringkasan"}}
 let S=defaultState(), ui={editBill:null,confirm:null,form:{},editDay:null,editSaldo:null,editGoal:null,slip:null,flash:""};
 function load(){
   try{const raw=localStorage.getItem(KEY);
-    if(raw){S=Object.assign(defaultState(),JSON.parse(raw));return}
+    if(raw){S=Object.assign(defaultState(),JSON.parse(raw));if((S.v||1)<2){S.carryOver=false;S.v=2}return}
     const old=localStorage.getItem(OLDKEY);
     if(old){const o=JSON.parse(old);if(o.tierId)S.tierId=o.tierId;if(Array.isArray(o.tiers)&&o.tiers.length)S.tiers=o.tiers;
       if(Array.isArray(o.weeks)&&o.weeks.length)S.weeks=o.weeks;if(Array.isArray(o.expenses))S.expenses=o.expenses;if(o.joinDate)S.joinDate=o.joinDate}
@@ -323,12 +323,27 @@ function vRingkasan(){
     <div class="sub tiny">Kebutuhan makan &amp; transport per minggu: ${rp(S.dailyLiving*7)}. Angka merah berarti sisa minggu itu di bawah kebutuhan tersebut.</div>
   </section>
 
-  <section class="grid3">
-    ${stat("Pendapatan tercatat "+mLabel(m),rp(mi),"--teal")}
-    ${stat("Pengeluaran & setoran",rp(me),"--coral")}
-    ${saldoCard(m)}
-  </section>`
+  ${nowSection()}`
 }
+/* saldo per hari ini: hanya bulan berjalan, gaji dihitung saat cair, pengeluaran s/d hari ini */
+function nowStats(){const t=today0(),m=mk(t),ti=iso(t);
+  const inc=S.weeks.filter(w=>{const p=payday(w);return mk(p)===m&&p<=t}).reduce((a,w)=>a+calcWeek(w).total,0);
+  const exp=S.expenses.filter(e=>e.date.slice(0,7)===m&&e.date<=ti).reduce((a,e)=>a+e.amount,0);
+  const adj=(S.saldoAdjNow||{})[m]||0;
+  const next=S.weeks.map(w=>({w,p:payday(w)})).filter(x=>x.p>t).sort((a,b)=>a.p-b.p)[0];
+  return{t,m,inc,exp,adj,base:inc-exp,saldo:inc-exp+adj,next}}
+function nowSection(){const N=nowStats(),ed=ui.editSaldo==="now",rng="1–"+N.t.getDate()+" "+BLN[N.t.getMonth()];
+  return`<section class="raised card stack"><div class="row between"><h2>Saldo per hari ini</h2><span class="sub tiny">${dShort(N.t)} ${N.t.getFullYear()} · hanya ${mLong(N.m)}</span></div>
+  <div class="grid3">
+   ${stat("Gaji cair "+rng,rp(N.inc),"--teal")}
+   ${stat("Pengeluaran "+rng,rp(N.exp),"--coral")}
+   ${ed?`<div class="flat card stack" style="gap:8px"><label for="sd-val" class="sub tiny" style="font-weight:600">Saldo sebenarnya hari ini</label><input id="sd-val" type="number" step="1000" value="${Math.round(N.saldo)}">
+     <div class="row" style="gap:6px"><button class="btn teal" data-act="saveSaldo" data-v="now">Simpan</button><button class="link" data-act="cancelSaldo">Batal</button></div></div>`
+   :`<div class="flat card"><div class="row between" style="gap:6px"><span class="sub tiny" style="font-weight:600">Saldo hari ini</span><button class="link" data-act="editSaldo" data-v="now" style="padding:0">Ubah</button></div>
+     <div class="mono" style="font-weight:700;font-size:15px;color:var(${N.saldo>=0?"--teal":"--coral"})">${rp(N.saldo)}</div>
+     ${N.adj?`<div class="tiny sub">termasuk penyesuaian ${N.adj>0?"+":"−"}${rp(Math.abs(N.adj))} · <button class="link coral" data-act="clearSaldo" data-v="now" style="padding:0;font-size:11px">hapus</button></div>`:""}</div>`}
+  </div>
+  <div class="sub tiny">Gaji dihitung saat cair (Sabtu) dan pengeluaran sampai tanggal hari ini. Sisa bulan lalu tidak ikut.${N.next?` Gaji berikutnya cair ${dShort(N.next.p)}: ${rp(calcWeek(N.next.w).total)}.`:""}</div></section>`}
 function firstMonth(){let f=mk(today0());S.weeks.forEach(w=>{const k=w.start.slice(0,7);if(k<f)f=k});S.expenses.forEach(e=>{const k=e.date.slice(0,7);if(k<f)f=k});Object.keys(S.saldoAdj||{}).forEach(k=>{if(k<f)f=k});return f}
 function carryIn(m){if(!S.carryOver)return 0;return m<=firstMonth()?0:saldoOf(addMonths(m,-1))}
 const saldoBase=m=>carryIn(m)+monthIncome(m)-monthExpense(m);
@@ -768,6 +783,9 @@ document.addEventListener("click",ev=>{
     ui.editDay={wid:tw.id,i:ti};S.activeMonth=tw.start.slice(0,7);return commit()}
   if(a==="editSaldo"){ui.editSaldo=el.dataset.v;render();const e=$("sd-val");e&&e.focus();return}
   if(a==="cancelSaldo"){ui.editSaldo=null;return render()}
+  if(a==="saveSaldo"&&el.dataset.v==="now"){const raw=String($("sd-val").value).trim(),v=num(raw),real=raw.startsWith("-")?-Math.abs(v):v,N=nowStats();
+    S.saldoAdjNow=S.saldoAdjNow||{};const adj=Math.round(real-N.base);if(adj)S.saldoAdjNow[N.m]=adj;else delete S.saldoAdjNow[N.m];ui.editSaldo=null;return commit()}
+  if(a==="clearSaldo"&&el.dataset.v==="now"){if(S.saldoAdjNow)delete S.saldoAdjNow[mk(today0())];return commit()}
   if(a==="saveSaldo"){const m=el.dataset.v,v=num($("sd-val").value),neg=String($("sd-val").value).trim().startsWith("-");const real=neg?-Math.abs(v):v;
     S.saldoAdj=S.saldoAdj||{};const base=saldoBase(m),adj=Math.round(real-base);if(adj)S.saldoAdj[m]=adj;else delete S.saldoAdj[m];ui.editSaldo=null;return commit()}
   if(a==="clearSaldo"){if(S.saldoAdj)delete S.saldoAdj[el.dataset.v];return commit()}
